@@ -14,10 +14,7 @@ active_clients = {}
 def handle_message(message):
    # First element is ID of client
    client_id = message[0]
-   print 'ID is: ' + client_id
-   message = message[1:]
-   for req in message:
-      print req
+   return False if message[1] == common.GOODBYE_MSG else True
 
 def run_server():
    pub, sec = common.get_keys('server')
@@ -31,11 +28,13 @@ def run_server():
 
    message = None
    try:
-      message = socket.recv_multipart()
-      print message
-      handle_message(message)
-      message[1] = 'Welcome'
-      socket.send_multipart(message)
+      active = True
+      while active:
+         message = socket.recv_multipart()
+         print message
+         # active = handle_message(message)
+         message[1] = common.WELCOME_MSG
+         socket.send_multipart(message)
    except Exception as e:
       print e
       pass
