@@ -8,7 +8,7 @@ from threading import Thread
 from time import sleep
 import random
 from traceback import print_exc
-
+import hashlib
 
 # Potential names:
 #  Panorama
@@ -28,8 +28,26 @@ class RequestHandler(Thread):
       self.active = True
 
       while self.active:
-         message = self.request_socket.poll(timeout=100)
-         print message,
+         if self.request_socket.poll(timeout=100):
+            req = self.request_socket.recv_multipart()
+            print req
+            if len(req) < 2:
+               continue
+            url = req[0]
+            request_id = req[1]
+
+            addr = (url, 443)
+            cert = ssl.get_server_certificate(addr)
+
+            print [
+               common.REPLY_MSG,
+               url,
+               request_id]
+            self.reply_socket.send_multipart([
+               common.REPLY_MSG,
+               url,
+               request_id,
+               str(cert)])
 
 class PanoramaClient(Thread):
    def __init__(self, server_address, server_key, client_cert_prefix, identity=None):
@@ -48,31 +66,70 @@ class PanoramaClient(Thread):
          unicode(identity) if identity else None);
       self.socket.connect(server_address)
 
+      client_id = str(random.randrange(1000000))
       # Set up method for server to request from client
-      req_address = 'inproc://requests_' + str(random.randrange(1000))
+      req_address = 'inproc://requests_' + client_id
       self.req_socket = self.context.socket(zmq.PUSH)
       self.req_socket.bind(req_address)
       self.req_handler = RequestHandler(req_address, self.socket)
 
+      # Set up socket to push replies from server
+      rep_address = 'inproc://replies_' + client_id
+      self.rep_socket = self.context.socket(zmq.PUB)
+      self.rep_socket.bind(rep_address)
+
+      # Set up request map
+      self.requests = {}
+
+      # Set state
       self.state = 'READY'
 
    def run(self):
+      self.state = 'RUNNING'
+
       self.req_handler.active = True
       self.req_handler.start()
 
-      self.state = 'RUNNING'
+      # Say hello to the server
+      self.socket.send_string(common.HELLO_MSG)
+      # Get reply. Server must WELCOME
+      welcome = self.socket.recv_string()
+      if welcome != common.WELCOME_MSG:
+         self.state = 'SHUT_DOWN'
+         raise RuntimeError('Server did not send WELCOME, instead sent: %s' % welcome)
+
+      # Main loop, send requests, get replies
       while self.state == 'RUNNING':
          sleep(random.random())
-         # Say hello to the server
-         self.socket.send_string(common.HELLO_MSG)
-         # Get reply. Server must WELCOME
-         reply = self.socket.recv()
-         assert(reply == common.WELCOME_MSG)
-         print reply
+         # Check for requests that need to be sent
+         if (len(self.requests)):
+            for req in list(self.requests):
+               print req
+               self.socket.send_multipart([
+                  common.REQUEST_MSG,
+                  req])
+               del self.requests[req]
+
+         # Check the incoming mail
+         if self.socket.poll(100):
+            msg = self.socket.recv_multipart()
+            msg_type = msg[0]
+            # First frame is message type
+            if msg_type == common.REQUEST_MSG:
+               # Second frame of request is url
+               self.req_socket.send_multipart(msg[1:])
+            elif msg_type == common.REPLY_MSG:
+               for thing in msg:
+                  print thing[:20],
+               print 
+               # Second (and on) frames of reply are MAC(hash(cert))
+            else:
+               print 'Got unknown message type:', msg_type
+
       self.state = 'SHUT_DOWN'
 
    def shutdown(self):
-      if self.state != 'RUNNING':
+      if self.state == 'READY':
          raise RuntimeError("Can't shutdown client before starting it!")
       self.state = 'SHUTTING_DOWN'
       self.req_handler.active = False
@@ -80,6 +137,9 @@ class PanoramaClient(Thread):
          print 'waiting for shutdown...', self.state
          sleep(.5)
       self.socket.send_string(common.GOODBYE_MSG)
+
+   def request(self, url):
+      self.requests[url] = None
 
 try:
    clients = []
@@ -89,6 +149,7 @@ try:
          'client')
       client.start()
       clients.append(client)
+   clients[0].request('www.google.com')
    sleep(5)
    for client in clients:
       client.shutdown()
@@ -97,20 +158,9 @@ except:
    client.shutdown()
 
 exit()
-pub, sec = common.get_keys('client')
-
-socket = common.create_socket(context,
-   zmq.DEALER,
-   sec,
-   pub,
-   auth.load_certificate('server.key')[0],
-   u'OH_HAI');
-
-connect_to_server(socket, 'tcp://127.0.0.1:12345')
 
 addr = ('www.google.com', 443)
 cert = ssl.get_server_certificate(addr)
 print cert
 x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, cert)
 print x509.get_subject().get_components()
-# socket.send_json(addr)
