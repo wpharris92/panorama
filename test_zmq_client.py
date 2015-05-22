@@ -9,6 +9,9 @@ from time import sleep
 import random
 from traceback import print_exc
 import hashlib
+import inspect
+
+print zmq.__file__
 
 # Potential names:
 #  Panorama

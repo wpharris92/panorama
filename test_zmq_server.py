@@ -47,13 +47,11 @@ def run_server():
             print 'Got reply for', message[2]
             if len(message) < 5:
                continue
-            print 'It is long enough'
             url = message[2]
             request_id = message[3]
             reply = message[4]
             if request_id not in active_requests:
                continue
-            print 'The request exists'
             request_info = active_requests[request_id]
             request_info[1].append(reply)
             # Temporary
@@ -71,7 +69,6 @@ def run_server():
             request_id = None
             while not request_id or request_id in active_requests:
                request_id = hex(rand.getrandbits(128))
-            print request_id
             active_requests[request_id] = [client_id, []]
             for client in active_clients:
                if client != client_id:
