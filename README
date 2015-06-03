@@ -58,8 +58,6 @@ In addition, the server may create a cache of recently accessed domains and
 return them without asking clients.
 
 ===============================================================================
-
-===============================================================================
 WHY
 
 Most browsers come preloaded with a list of CAs to trust. Browsers then check
@@ -78,8 +76,6 @@ browsers will trust their certificates by default.
 There have been a number of cases where false certificates were created, which
 would allow an attacker to play MITM with every browser, since the certificate
 would be trusted by all browsers.
-
-===============================================================================
 
 ===============================================================================
 HOW
@@ -225,8 +221,6 @@ Now you can go ahead and make requests!
    the decision to trust the connection is left to the caller.
 
 ===============================================================================
-
-===============================================================================
 FUTURE WORK
 
 - Make things more configurable (server key, database, endpoint)
@@ -241,8 +235,6 @@ FUTURE WORK
       views for the same client who's connected multiple times to be returned.
 
 ===============================================================================
-
-===============================================================================
 WHERE
 
 Perspectives is available on GitHub at:
@@ -250,11 +242,8 @@ Perspectives is available on GitHub at:
 https://github.com/wpharris92/panorama
 
 ===============================================================================
-
-===============================================================================
 WHO
 
 Will Harris
    wpharris92@gmail.com
 
-===============================================================================
