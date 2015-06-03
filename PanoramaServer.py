@@ -7,20 +7,24 @@ import ssl
 from traceback import print_exc
 from random import SystemRandom
 from time import time, sleep
+import threading
 from threading import Thread
+from base64 import b64encode, b64decode
 
 import peewee
 from peewee import *
-
-print 'zmq version =', zmq.zmq_version()
 
 SECONDS_BEFORE_PING = 5
 SECONDS_BEFORE_DISCONNECT = 15
 PING_FREQUENCY = 5 # Ping every 5 seconds
 
+DEFAULT_WINDOW_MINS = .5 # 60 * 7 # 1 week
+
 active_clients = {}
 active_requests = {}
 rand = SystemRandom()
+
+socket_lock = threading.Lock()
 
 class ClientInfo:
    def __init__(self, client_id):
@@ -37,6 +41,46 @@ class ClientInfo:
       self.replies_requested[request_id] = num_replies_requested
       active_requests[request_id] = self
 
+def load_database(database_name, user, password=None):
+   return MySQLDatabase(database_name, user=user, password=password)
+
+def save_request(client_id, request):
+   save_access(client_id, request.url, request.this_view)
+
+def save_reply(client_id, reply):
+   save_access(client_id, reply.url, reply.reply)
+
+def save_access(client_id, url, cert_data):
+   access = Access(
+      client_id=client_id,
+      url=url,
+      cert_hash=cert_data,
+      access_time=time())
+   try:
+      access.save()
+   except peewee.IntegrityError:
+      print 'Updating existing database entry'
+      access = Access.get(Access.client_id == client_id,
+         Access.url == url)
+      access.cert_hash = cert_data
+      access.access_time = time()
+      access.save()
+
+def access_to_reply(access):
+   return Reply('',
+      access.url,
+      access.cert_hash)
+
+def load_accesses(client_id, url, window=DEFAULT_WINDOW_MINS):
+   return Access.select().where(
+      Access.client_id != client_id,
+      Access.url == url,
+      Access.access_time > time() - (DEFAULT_WINDOW_MINS * 60))
+
+def get_database_replies(client_id, url, window=DEFAULT_WINDOW_MINS):
+   accesses = load_accesses(client_id, url, window)
+   return [(access.client_id, access_to_reply(access)) for access in accesses]
+
 # Iterate through the clients and check how long it's been since they were active.
 # If it's been longer than SECONDS_BEFORE_PING, ping them.
 # If it's been longer than SECONDS_BEFORE_DISCONNECT, disconnect them.
@@ -48,7 +92,8 @@ def run_heartbeats(socket, client_map):
          if time() - client.last_action_time > SECONDS_BEFORE_DISCONNECT:
             print 'Disconnecting', client.id
             try:
-               socket.send_multipart([client.id, common.GOODBYE_MSG])
+               with socket_lock:
+                  socket.send_multipart([client.id, common.GOODBYE_MSG])
             except:
                # Client isn't there! Don't do anything special.
                print_exc()
@@ -61,25 +106,23 @@ def run_heartbeats(socket, client_map):
                del client_map[client.id]
 
          elif time() - client.last_action_time > SECONDS_BEFORE_PING:
-            print 'Pinging', client.id
             # Ping the client
             try:
-               socket.send_multipart([client.id, common.PING])
+               with socket_lock:
+                  socket.send_multipart([b64decode(client.id), common.PING])
             except:
                # Couldn't talk to the client. We'll try again later
                print_exc()
                pass
       sleep(PING_FREQUENCY)
 
-def load_database(database_name, user, password=None):
-   return MySQLDatabase(database_name, user=user, password=password)
-
 def run_server():
-   pub, sec = common.get_keys('server')
 
-   load_database('test', 'WillHarris')
-
+   # Prepare the database
    Access.create_table(fail_silently=True)
+
+   # Set up the ZMQ socket
+   pub, sec = common.get_keys('server')
    
    socket = common.create_socket(zmq.Context.instance(), 
       zmq.ROUTER,
@@ -88,6 +131,10 @@ def run_server():
 
    socket.bind('tcp://127.0.0.1:12345')
 
+   poller = zmq.Poller()
+   poller.register(socket, zmq.POLLIN)
+
+   # Start the heartbeat thread
    heartbeat_thread = Thread(target=run_heartbeats, args=(socket, active_clients))
    heartbeat_thread.daemon = True
    heartbeat_thread.start()
@@ -95,8 +142,12 @@ def run_server():
    try:
       active = True
       while active:
-         message = socket.recv_multipart()
-         client_id = message[0]
+         if (poller.poll()):
+            pass
+         # Now there should be a message ready
+         with socket_lock:
+            message = socket.recv_multipart()
+         client_id = b64encode(message[0])
          msg_type = message[1]
 
          if msg_type == common.HELLO_MSG:
@@ -104,15 +155,18 @@ def run_server():
                active_clients[client_id] = ClientInfo(client_id)
 
          elif msg_type == common.REPLY_MSG:
-            print 'Got reply for', message[2]
             reply = Reply.from_message(message[1:])
             if reply.request_id not in active_requests:
                continue
+
+            save_reply(client_id, reply)
+
             request_info = active_requests[reply.request_id]
 
             reply.request_id = None # Don't need when replying to client
 
-            socket.send_multipart([request_info[0]] + reply.to_message())
+            with socket_lock:
+               socket.send_multipart([b64decode(request_info[0])] + reply.to_message())
 
             request_info[1] -= 1
             if not request_info[1]:
@@ -120,7 +174,6 @@ def run_server():
                del active_requests[request_id]
 
          elif msg_type == common.REQUEST_MSG:
-            print 'Got request for', message[2], 'from', client_id
             request_id = None
             while not request_id or request_id in active_requests:
                request_id = hex(rand.getrandbits(128))
@@ -128,21 +181,35 @@ def run_server():
             forwarded_request = Request.from_message(message[1:])
             forwarded_request.request_id = request_id
 
+            save_request(client_id, forwarded_request)
+
             num_replies_requested = forwarded_request.num_replies
 
             active_requests[request_id] = [client_id, forwarded_request.num_replies]
             forwarded_request.num_replies = '' # Clear since we're sending to other clients
+
+            do_not_ask = set((client_id,))
+            # Return replies from the database
+            for client_asked, reply in get_database_replies(client_id, forwarded_request.url):
+               print 'Sending reply from database'
+               do_not_ask.add(client_asked)
+               with socket_lock:
+                  socket.send_multipart([b64decode(client_id)] + reply.to_message())
+               num_replies_requested -= 1
 
             num_requests_sent = 0
             for client in active_clients.values():
                if num_requests_sent >= num_replies_requested:
                   break
 
-               if client.id != client_id:
-                  message_to_send = [client.id]
+               if client.id not in do_not_ask:
+                  do_not_ask.add(client.id)
+                  message_to_send = [b64decode(client.id)]
                   message_to_send.extend(forwarded_request.to_message())
                   try:
-                     socket.send_multipart(message_to_send)
+                     print 'Making request to another client'
+                     with socket_lock:
+                        socket.send_multipart(message_to_send)
                   except:
                      print_exc()
                      continue
@@ -182,9 +249,15 @@ class Access(Model):
    client_id = peewee.CharField()
    url = peewee.CharField()
    cert_hash = peewee.CharField()
+   access_time = peewee.IntegerField()
 
    class Meta:
       database = db
+      # Set up unique constraints
+      indexes = (
+         # Each client may have one entry per url
+         (('client_id', 'url'), True),
+      )
 
 try:
    run_server()

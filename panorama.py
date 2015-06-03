@@ -14,63 +14,14 @@ import inspect
 from Queue import Queue, Empty, Full
 from multiprocessing.pool import ThreadPool
 import json
+import cmd
 
-# Potential names:
-#  Panorama
-#  Peerspectives (lol)
-#  Periphrials
 DEFAULT_NUM_REPLIES = 5
 DEFAULT_TIMEOUT = 5
 
 STATE_READY = 'READY'
 STATE_RUNNING = 'RUNNING'
 STATE_STOPPED = 'STOPPED'
-
-def reply_to_requests(request_queue, reply_socket):
-   while True:
-      request_msg = request_queue.get(block=True)
-      try:
-         reply = Reply.from_request_msg(request_msg)
-      except:
-         # Invalid request
-         print_exc()
-         continue
-
-      print 'Got request for url:', reply.url
-      try:
-         reply.reply = common.get_server_data(reply.url)
-      except:
-         print 'Failed to get server certificate:'
-         print_exc()
-         continue
-
-      reply_socket.send_multipart(reply.to_message())
-
-def delegate_messages(client, incoming_socket, request_queue, reply_listeners):
-   while True:
-      msg = incoming_socket.recv_multipart()
-      # First frame is message type
-      msg_type = msg[0]
-
-      if msg_type == common.REQUEST_MSG:
-         # Pass to the request queue
-         request_queue.put(msg, block=True, timeout=.25)
-
-      elif msg_type == common.REPLY_MSG:
-         print 'Got reply for', msg[1]
-         # Publish the reply
-         client.publish_reply(msg)
-
-      elif msg_type == common.GOODBYE_MSG:
-         print 'Disconnected by server'
-         client.stop()
-
-      elif msg_type == common.PING:
-         # Don't delegate, just reply here
-         incoming_socket.send_multipart([common.PING])
-
-      else:
-         print 'Got unknown message type: %s, ignoring it' % msg_type
 
 class PanoramaClient():
    def __init__(self, server_address, server_key, client_cert_prefix):
@@ -94,25 +45,30 @@ class PanoramaClient():
       self.reply_listeners = []
 
       # Set up thread to delegate messages
-      message_delegate = Thread(target=delegate_messages, args=(self, self.server_socket, request_queue, self.reply_listeners))
+      message_delegate = Thread(target=self.delegate_messages,\
+         args=(self.server_socket, request_queue, self.reply_listeners))
       message_delegate.daemon = True
       message_delegate.start()
 
       # Set up thread to handle requests
-      request_handler = Thread(target=reply_to_requests, args=(request_queue, self.server_socket))
+      request_handler = Thread(target=self.reply_to_requests,\
+         args=(request_queue, self.server_socket))
       request_handler.daemon = True
       request_handler.start()
 
       self.state = STATE_READY
 
+   # Start up the server
    def start(self):
       self.server_socket.send_multipart([common.HELLO_MSG])
       self.state = STATE_RUNNING
 
+   # Stop the server
    def stop(self):
       self.server_socket.send_multipart([common.GOODBYE_MSG])
       self.state = STATE_STOPPED
 
+   # Take a reply and publish it to all self.reply_listeners
    def publish_reply(self, message):
       for reply_listener in self.reply_listeners:
          try:
@@ -121,18 +77,68 @@ class PanoramaClient():
             print 'Queue was full'
             pass
 
-   def get_reply_listeners(self):
-      return self.reply_listeners
-
+   # Grab a reply listener, so we can listen for replies to a request
    def get_reply_listener(self):
       listener = Queue()
-      self.get_reply_listeners().append(listener)
+      self.reply_listeners.append(listener)
       return listener
 
+   # Get rid of the reply listener
    def del_reply_listener(self, listener):
       self.reply_listeners.remove(listener)
 
-   # Timeout is in seconds
+   # Method to be run in background thread to reply to requests
+   def reply_to_requests(self, request_queue, reply_socket):
+      while True:
+         request_msg = request_queue.get(block=True)
+         try:
+            reply = Reply.from_request_msg(request_msg)
+         except:
+            # Invalid request
+            print_exc()
+            continue
+
+         print 'Got request for url:', reply.url
+         try:
+            reply.reply = common.get_server_data(reply.url)
+         except:
+            print 'Failed to get server certificate:'
+            print_exc()
+            continue
+
+         reply_socket.send_multipart(reply.to_message())
+
+   # Method to be run in background to:
+   #   Listen for and delegate messages
+   #   Respond to pings
+   #   React appropriately when the server disconnects us
+   def delegate_messages(self, incoming_socket, request_queue, reply_listeners):
+      while True:
+         msg = incoming_socket.recv_multipart()
+         # First frame is message type
+         msg_type = msg[0]
+
+         if msg_type == common.REQUEST_MSG:
+            # Pass to the request queue
+            request_queue.put(msg, block=True, timeout=.25)
+
+         elif msg_type == common.REPLY_MSG:
+            print 'Got reply for', msg[1]
+            # Publish the reply
+            self.publish_reply(msg)
+
+         elif msg_type == common.GOODBYE_MSG:
+            print 'Disconnected by server'
+            self.stop()
+
+         elif msg_type == common.PING:
+            # Don't delegate, just reply here
+            incoming_socket.send_multipart([common.PING])
+
+         else:
+            print 'Got unknown message type: %s, ignoring it' % msg_type
+
+   # Make a request for other views of a certificate
    def request(self, url, timeout=DEFAULT_TIMEOUT, num_replies=DEFAULT_NUM_REPLIES):
       assert self.state == STATE_RUNNING, 'Must make requests on running client'
 
@@ -152,7 +158,7 @@ class PanoramaClient():
 
       start = time()
       replies = []
-      while len(replies) < DEFAULT_NUM_REPLIES:
+      while len(replies) < num_replies:
          if time() - start >= timeout:
             break
 
@@ -173,25 +179,11 @@ class PanoramaClient():
 
       self.del_reply_listener(reply_listener)
 
-      return replies
+      reply_counts = {}
+      for reply in replies:
+         if reply not in reply_counts:
+            reply_counts[reply] = 1
+         else:
+            reply_counts[reply] += 1
 
-try:
-   clients = []
-   for _ in range(10):
-      client = PanoramaClient('tcp://127.0.0.1:12345',
-         auth.load_certificate('server.key')[0],
-         'client')
-      client.start()
-      clients.append(client)
-
-   sleep(3)
-   print clients[0].request('www.google.com')
-
-   for client in clients:
-      if client.state == STATE_RUNNING:
-         sleep(2)
-         client.stop()
-   # replies = clients[0].request('www.google.com')
-   # print len(replies)
-except:
-   print_exc()
+      return this_view, reply_counts
