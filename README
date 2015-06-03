@@ -88,13 +88,23 @@ Panorama is written in Python.
    Get Python:
       https://www.python.org/downloads/
 
+MySQL is used by the server to store client views.
+   Get MySQL:
+      http://www.mysql.com/downloads/
+
+pyMySQL is needed for Python to be able to talk to MySQL.
+   Get pyMySQL:
+      https://github.com/PyMySQL/PyMySQL/
+
+peewee is used as a layer above MySQL, to simplify communication with the
+   database.
+   Get peewee:
+      http://docs.peewee-orm.com/en/1.0.0/peewee/installation.html
+
 ZeroMQ is used to communicate between client and server. The Python bindings are
 in PyZMQ.
    Get PyZMQ:
       https://github.com/zeromq/pyzmq
-NOTE: There may be issues when installing PyZMQ using pip, since there may be 
-   patches since the last release. If you're running into weird issues, try
-   installing it from source. 
 
 ----------------
 Before you begin
