@@ -1,0 +1,260 @@
+
+                                    Panorama
+         Multi-Path SSL Authentication using Peer Network Perspectives
+
+===============================================================================
+WHAT
+
+Panorama aims to provide authenticity for SSL connections without Certificate 
+Authorities. It is based on the Perspectives and Convergence projects:
+
+Perspectives: http://perspectives-project.org/
+Convergence: http://convergence.io/
+
+Panorama aims to provide a wider view than either of the projects by utilizing
+peer network perspectives. 
+
+----------------
+General Concepts
+----------------
+
+   Authenticity - Essentially, knowing that you're talking to who you intend to
+      talk to.
+
+   Certificate - A binding of a public key to an identity. Alice's certificate
+      contains her identity and public key. She would present this certificate
+      to Bob, so that Bob can encrypt data to Alice.
+
+   Man-In-The-Middle (MITM) Attack - An attack that is possible when a
+      connection lacks authenticity. As an example, Alice asks for Bob's 
+      certificate, but Eve intercepts her connection and provides a certificate
+      with Bob's identity and Eve's public key. Eve then would connect to Bob,
+      pretending to be Alice, and could then see the traffic between Bob and
+      Alice.
+
+   Certificate Authority (CA) - The first attempt at providing authenticity to
+      connections on the web. In theory, a CA will verify (out of band) that the
+      private key for a certificate's public key is owned by the entity 
+      identified on the certificate.
+
+   Perspectives (project) - An alternative to the CA system, that instead uses
+      multiple network perspectives to verify the identity of a server. It is 
+      based on the idea that, though it would be easy to play MITM with a single
+      entity, doing so with many distributed connections is very hard. A client
+      will get the server's certificate, and verify with semi-authoritive
+      'notaries' that they also see the same certificate.
+
+
+Panorama is based on the same idea as Perspectives, but instead uses other peers
+to provide distributed network vantage points.
+
+Clients will connect to a server and can make requests for domains, which will
+be routed to other connected clients. Those clients will grab the certificate
+for the requested domain and reply to the server, which will route the request
+back to the original client. The client can then decide whether to trust the
+connection based on what other peers have seen.
+
+In addition, the server may create a cache of recently accessed domains and
+return them without asking clients.
+
+===============================================================================
+
+===============================================================================
+WHY
+
+Most browsers come preloaded with a list of CAs to trust. Browsers then check
+that a certificate is signed by one of the trusted CA's and that the identity
+matches that of the website they are connecting to. This is secure as long as
+we assume that certificate authorities correctly verify each certificate they
+sign. 
+
+Certificate Authorities have delegated their certificate signing to over 600
+organizations, according to the EFF.
+   https://www.eff.org/observatory
+
+Many of the organizations aren't tracked or audited by browser companies, but 
+browsers will trust their certificates by default.
+
+There have been a number of cases where false certificates were created, which
+would allow an attacker to play MITM with every browser, since the certificate
+would be trusted by all browsers.
+
+===============================================================================
+
+===============================================================================
+HOW
+
+------------
+Dependencies
+------------
+
+Panorama is written in Python.
+   Get Python:
+      https://www.python.org/downloads/
+
+ZeroMQ is used to communicate between client and server. The Python bindings are
+in PyZMQ.
+   Get PyZMQ:
+      https://github.com/zeromq/pyzmq
+NOTE: There may be issues when installing PyZMQ using pip, since there may be 
+   patches since the last release. If you're running into weird issues, try
+   installing it from source. 
+
+----------------
+Before you begin
+----------------
+
+### Server Database
+
+The server holds a database of previous client 'views'. This is now a MySql 
+   database, and must be created before running the server.
+
+The database name and user must be specified within PanoramaServer.py. Sorry.
+
+### Certificates
+
+To make sure you're connecting to the server (and not someone pretending to be
+   the server), you must get the server's certificate.
+
+For now, this is generated when you start the server. 'server.key' is the name
+   of the server key. Woop.
+
+In addition, each client must use this certificate. An example of passing the
+   server certificate to the PanoramaClient is seen easily in
+   PanoramaClientGroup.py.
+
+----------------------
+Starting up the Server
+----------------------
+
+To start the server, simply run:
+   python PanoramaServer.py
+
+This will start up the server, which will generate its own key, 'server.key' (if
+   it doesn't already exist). It will also bind to 'tcp://127.0.0.1:12345',
+   since this is just an example.
+
+But that's it! Assuming your database is set up already, you're now ready for
+connections. Every 5 seconds, the server will report how many clients are
+connected, and will ping inactive clients.
+
+As of now, the server exists as a single entity and not something modularized.
+Sorry.
+
+--------------------
+Example Usage / Demo
+--------------------
+
+After starting up a server, and in another terminal window, run:
+   python PanoramaClientGroup.py
+
+This will start up 10 clients and connect them to the server. Nice! They will
+   be used to respond to our requests for domains.
+
+In a third window, run:
+   python InteractivePanoramaClient.py
+
+In this window, you can make requests for certificates, and watch the responses
+   from the other clients.
+
+Let's try making a request for www.google.com:
+   >> request www.google.com
+
+You should see the server tell you about where the replies are coming from, 
+   either responses from the database or as requests to other connected clients.
+
+In the window where you started up the client group, you should see a bunch of
+   attempts at writing 'Got request for url: www.google.com'. They might be a
+   bit jumbled, that's okay. We're working with threads!
+
+Back to the window we made the request from, you should see a printout of what
+   your client saw, and a map of what other clients saw, followed by a final
+   decision of whether or not to trust the connection. At this point, you should
+   be trusting whatever certificate 'www.google.com' returns, since you're
+   making the request from the same perspective.
+
+Cool! Nice work. But this isn't a very fun example, since everyone agrees.
+
+Let's throw some comprimised folks in with the mix! In yet another window, run:
+   python EvilPanoramaClients.py
+
+These 10 guys will respond to any request with 'BAD_CERTIFICATE_INFO'
+
+So again, let's go to our interactive client:
+   >> request www.amazon.com
+
+You will see that we got responses of certificate hashes and the bad certificate
+   info. But... there's only 5 responses. You'd like to do more.
+
+Another argument after the domain in the request will change the number of
+   replies the server will try to return to you:
+   >> request www.amazon.com 20
+
+This will request from all 20 other connected clients. You should get something
+   like:
+      {'<an actual hashcode>': 10, 'BAD_CERTIFICATE_INFO': 10}
+      I WOULD trust this connection.
+
+By default, this will trust a connection if 50% or more peers agree with what
+   you saw. To change this, add another argument (in the range 0 to 1):
+   >> request www.amazon.com 20 .7
+   ...
+   I would NOT trust this connection
+
+Congratulations! That's my whole project.
+
+-----------------------
+Using a Panorama Client
+-----------------------
+
+Add this import line:
+   from panorama import PanoramaClient
+
+Now create a PanoramaClient:
+   client = PanoramaClient(server_address, server_key, client_key_prefix)
+      where:
+      server_address is the zmq-style address of the server
+      server_key is the key loaded from the server's certificate file
+      client_key_prefix is the prefix (without '.key') of the client's key file
+         if the file doesn't exist, it is created
+
+Now you can go ahead and make requests!
+   client.request('www.google.com')
+
+   This will return a map of (cert hash) -> (# of peers with this opinion), and
+   the decision to trust the connection is left to the caller.
+
+===============================================================================
+
+===============================================================================
+FUTURE WORK
+
+- Make things more configurable (server key, database, endpoint)
+- Modularize the server
+- Add into a browser extension
+- Also handle global request configuration (I always want to request 20 replies,
+   and I will trust the connection if at least 60% agree with me)
+   -Present a call that, given a domain, will return True or False as a trust
+      decision
+- Within the server, identify clients by their private key/certificate
+   - Currently, the zmq-generated id is used, which could cause multiple
+      views for the same client who's connected multiple times to be returned.
+
+===============================================================================
+
+===============================================================================
+WHERE
+
+Perspectives is available on GitHub at:
+
+https://github.com/wpharris92/panorama
+
+===============================================================================
+
+===============================================================================
+WHO
+
+Will Harris
+   wpharris92@gmail.com
+
+===============================================================================

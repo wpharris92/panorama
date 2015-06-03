@@ -1,20 +1,10 @@
 import zmq
 import common
 from common import Request, Reply
-import zmq.auth as auth
-import ssl
-import OpenSSL
-import json
 from threading import Thread
-from time import sleep, time
-import random
+from time import time
 from traceback import print_exc
-import hashlib
-import inspect
 from Queue import Queue, Empty, Full
-from multiprocessing.pool import ThreadPool
-import json
-import cmd
 
 DEFAULT_NUM_REPLIES = 5
 DEFAULT_TIMEOUT = 5

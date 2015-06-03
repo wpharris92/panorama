@@ -14,6 +14,9 @@ from base64 import b64encode, b64decode
 import peewee
 from peewee import *
 
+MYSQL_USER = 'WillHarris'
+MYSQL_DATABASE = 'test'
+
 SECONDS_BEFORE_PING = 5
 SECONDS_BEFORE_DISCONNECT = 15
 PING_FREQUENCY = 5 # Ping every 5 seconds
@@ -238,8 +241,8 @@ auth = ThreadAuthenticator(zmq.Context.instance())
 auth.start()
 auth.configure_curve(domain='*', location=zmq.auth.CURVE_ALLOW_ANY)
 
-database_name = 'test'
-username = 'WillHarris'
+database_name = MYSQL_DATABASE
+username = MYSQL_USER
 
 db = load_database(database_name, username)
 
